@@ -482,7 +482,8 @@ class DeviceToDeviceMessageLatencyPingPongSM: public Testcase {
             "\t[--minMsgSize, --maxMsgSize]. The row device writes the message into the column\n"
             "\tdevice's memory via P2P stores and sets a flag; the column device echoes it back.\n"
             "\tOne-way latency = round-trip / 2, timed on-device with the GPU global timer, so no\n"
-            "\tkernel launch or CUDA event overhead is included.\n"
+            "\tkernel launch or CUDA event overhead is included. The copy-kernel block count is\n"
+            "\tauto-tuned per message size (fastest candidate reported).\n"
             "\t--bufferSize flag is ignored") {}
     virtual ~DeviceToDeviceMessageLatencyPingPongSM() {}
     void run(unsigned long long size, unsigned long long loopCount);

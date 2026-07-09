@@ -227,7 +227,8 @@ struct LatencyNode {
 
 enum UnitType {
     BANDWIDTH,
-    LATENCY
+    LATENCY,
+    LATENCY_US
 };
 
 inline std::string getUnitString(UnitType unitType) {
@@ -236,6 +237,8 @@ inline std::string getUnitString(UnitType unitType) {
             return " +GB/s";
         case LATENCY:
             return " -ns";
+        case LATENCY_US:
+            return " -us";
         default:
             return "";
     }

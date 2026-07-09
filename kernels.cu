@@ -483,15 +483,28 @@ __device__ __forceinline__ void pingPongGridCopy(uint4 *dst, const uint4 *src, s
     }
 }
 
+// Waits until *flag >= r; the timeout budget applies to this single wait.
+// Returns false (and sets the error flag) on timeout.
+__device__ __forceinline__ bool pingPongWaitFlag(volatile unsigned int *flag, unsigned int r,
+                                                 unsigned long long timeoutNs, volatile int *errorFlagOut) {
+    const unsigned long long waitStart = globalTimerNs();
+    while (*flag < r) {
+        if (globalTimerNs() - waitStart > timeoutNs) {
+            *errorFlagOut = 1;
+            return false;
+        }
+    }
+    return true;
+}
+
 __global__ void pingPongKernel(uint4 *writeDst, const uint4 *readSrc, size_t numElems,
                                volatile unsigned int *localFlag, volatile unsigned int *remoteFlag,
                                unsigned int totalRounds, unsigned int warmupRounds, int isInitiator,
                                unsigned long long timeoutNs,
-                               unsigned long long *elapsedNsOut, int *errorFlagOut) {
+                               unsigned long long *elapsedNsOut, volatile int *errorFlagOut) {
     cooperative_groups::grid_group grid = cooperative_groups::this_grid();
     const bool multiBlock = gridDim.x > 1;
     const bool leader = (blockIdx.x == 0 && threadIdx.x == 0);
-    const unsigned long long startTime = globalTimerNs();
     unsigned long long t0 = 0;
 
     for (unsigned int r = 1; r <= totalRounds; r++) {
@@ -506,26 +519,23 @@ __global__ void pingPongKernel(uint4 *writeDst, const uint4 *readSrc, size_t num
             pingPongSync(grid, multiBlock);
             if (leader) {
                 *remoteFlag = r;
-                while (*localFlag < r) {
-                    if (globalTimerNs() - startTime > timeoutNs) {
-                        *errorFlagOut = 1;
-                        break;
-                    }
-                }
-                __threadfence();
+                pingPongWaitFlag(localFlag, r, timeoutNs, errorFlagOut);
+                __threadfence_system();
             }
             pingPongSync(grid, multiBlock);
+            // Abort promptly after a timeout instead of burning the remaining rounds
+            if (*errorFlagOut) {
+                break;
+            }
         } else {
             if (leader) {
-                while (*localFlag < r) {
-                    if (globalTimerNs() - startTime > timeoutNs) {
-                        *errorFlagOut = 1;
-                        break;
-                    }
-                }
-                __threadfence();
+                pingPongWaitFlag(localFlag, r, timeoutNs, errorFlagOut);
+                __threadfence_system();
             }
             pingPongSync(grid, multiBlock);
+            if (*errorFlagOut) {
+                break;
+            }
             pingPongGridCopy(writeDst, readSrc, numElems);
             __threadfence_system();
             pingPongSync(grid, multiBlock);

@@ -279,12 +279,12 @@ int main(int argc, char **argv) {
         output->recordError(errmsg.str());
         return 1;
     }
-    // Validate the message-size sweep bounds: at least one uint4, rounded
-    // down to powers of two so copy kernels never truncate
-    if (minMsgSize < 16 || maxMsgSize < minMsgSize) {
+    // Validate the message-size sweep bounds: at least one uint4, at most
+    // 1 GiB, rounded down to powers of two so copy kernels never truncate
+    if (minMsgSize < 16 || maxMsgSize < minMsgSize || maxMsgSize > (1ULL << 30)) {
         std::stringstream errmsg;
         errmsg << "ERROR: Invalid message size range [" << minMsgSize << ", " << maxMsgSize
-               << "]. minMsgSize must be >= 16 bytes and <= maxMsgSize.";
+               << "]. minMsgSize must be >= 16 bytes, <= maxMsgSize; maxMsgSize must be <= 1 GiB.";
         output->recordError(errmsg.str());
         return 1;
     }

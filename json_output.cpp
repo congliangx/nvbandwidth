@@ -124,12 +124,16 @@ void JsonOutput::recordErrorCurrentTest(const std::string &errorPart1, const std
 
 void JsonOutput::setTestcaseStatusAndAddIfNeeded(const std::string &name, const std::string &status, const std::string &msg) {
     bool testCaseExists = false;
-    if (m_root[NVB_TESTCASES].isArray()) {
+    if (m_root[NVB_TITLE][NVB_TESTCASES].isArray()) {
         Json::Value &testcases = m_root[NVB_TITLE][NVB_TESTCASES];
-        unsigned int size = testcases.size();
-        if (size > 0 && testcases[size-1][NVB_TESTCASE_NAME].asString() == name) {
-            testcases[size-1][NVB_STATUS] = status;
-            testCaseExists = true;
+        // Search backwards so the most recent entry with this name is updated;
+        // sweep testcases append per-size sub-entries after their parent entry
+        for (int i = (int) testcases.size() - 1; i >= 0; i--) {
+            if (testcases[i][NVB_TESTCASE_NAME].asString() == name) {
+                testcases[i][NVB_STATUS] = status;
+                testCaseExists = true;
+                break;
+            }
         }
     }
 

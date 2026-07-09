@@ -34,8 +34,13 @@
 
 static std::vector<unsigned long long> messageSizeSweep() {
     std::vector<unsigned long long> sizes;
-    for (unsigned long long s = minMsgSize; s <= maxMsgSize; s <<= 1) {
+    unsigned long long s = minMsgSize;
+    while (s <= maxMsgSize) {
         sizes.push_back(s);
+        if (s > maxMsgSize / 2) {
+            break;  // s <<= 1 would overflow or exceed the bound
+        }
+        s <<= 1;
     }
     return sizes;
 }
@@ -66,14 +71,15 @@ static unsigned int pingPongIters(unsigned long long msgSize) {
     return 200;
 }
 
-// Copy-kernel blocks per side: single block for latency-dominated sizes
-// (no grid sync on the critical path), scaled up for larger messages so the
-// copy phase is not single-SM-throughput-bound
-static unsigned int pingPongBlocks(unsigned long long msgSize) {
-    if (msgSize <= 128 * 1024ULL) return 1;
-    if (msgSize <= 512 * 1024ULL) return 4;
-    if (msgSize <= 2 * 1024 * 1024ULL) return 8;
-    return 16;
+// Copy-kernel block-count candidates per side. A single block avoids grid
+// syncs on the critical path but is single-SM store-throughput-bound; more
+// blocks speed up the copy phase but add two grid syncs per one-way leg.
+// The crossover depends on the interconnect, so mid-range sizes measure all
+// candidates and the fastest (minimum) latency is reported.
+static std::vector<unsigned int> pingPongBlockCandidates(unsigned long long msgSize) {
+    if (msgSize <= 32 * 1024ULL) return {1};
+    if (msgSize <= 512 * 1024ULL) return {1, 4, 8};
+    return {8, 16};
 }
 
 static const unsigned int pingPongWarmupRounds = 32;
@@ -81,7 +87,7 @@ static const unsigned int pingPongWarmupRounds = 32;
 static void ceMessageLatencySweep(const std::string &key, bool isRead) {
     for (unsigned long long msgSize : messageSizeSweep()) {
         const std::string label = msgSizeLabel(msgSize);
-        PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY);
+        PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY_US);
         MemcpyOperation memcpyInstance(ceLatencyLoopCount(msgSize), new MemcpyInitiatorCE(),
                                        isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT);
 
@@ -111,6 +117,11 @@ static void ceMessageLatencySweep(const std::string &key, bool isRead) {
         output->addTestcaseResults(latencyValues,
             std::string("memcpy CE GPU(row) ") + (isRead ? "reads from" : "writes to") +
             " GPU(column) per-message latency (us), message size " + label);
+    }
+
+    if (jsonOutput) {
+        // Finalize the parent sweep entry (per-size sub-entries got their own status)
+        output->setTestcaseStatusAndAddIfNeeded(key, NVB_PASSED);
     }
 }
 
@@ -142,9 +153,9 @@ void DeviceToDeviceMessageLatencyPingPongSM::run(unsigned long long size, unsign
 
     for (unsigned long long msgSize : messageSizeSweep()) {
         const std::string label = msgSizeLabel(msgSize);
-        PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY);
+        PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY_US);
         const unsigned int iters = pingPongIters(msgSize);
-        const unsigned int numBlocks = pingPongBlocks(msgSize);
+        const std::vector<unsigned int> blockCandidates = pingPongBlockCandidates(msgSize);
 
         for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
             for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
@@ -167,15 +178,24 @@ void DeviceToDeviceMessageLatencyPingPongSM::run(unsigned long long size, unsign
                 CU_ASSERT(cuMemsetD8(recvBuffer.getBuffer(), 0, msgSize));
                 CU_ASSERT(cuCtxSynchronize());
 
-                PerformanceStatistic latencyStat;
-                for (unsigned int n = 0; n < averageLoopCount; n++) {
-                    double latencyUs = pingPongOneWayLatencyUs(srcDeviceId, peerDeviceId,
-                        srcBuffer.getBuffer(), echoBuffer.getBuffer(), recvBuffer.getBuffer(),
-                        msgSize, iters, pingPongWarmupRounds, numBlocks);
-                    latencyStat(latencyUs);
-                    VERBOSE << "\tSample " << n << ": " << srcBuffer.getBufferString() << " <-> "
-                            << recvBuffer.getBufferString() << " (" << label << "): "
-                            << std::fixed << std::setprecision(3) << latencyUs << " us\n";
+                // Auto-tune the copy grid: report the fastest block-count candidate
+                double bestLatencyUs = 0.0;
+                for (unsigned int numBlocks : blockCandidates) {
+                    PerformanceStatistic latencyStat;
+                    for (unsigned int n = 0; n < averageLoopCount; n++) {
+                        double latencyUs = pingPongOneWayLatencyUs(srcDeviceId, peerDeviceId,
+                            srcBuffer.getBuffer(), echoBuffer.getBuffer(), recvBuffer.getBuffer(),
+                            msgSize, iters, pingPongWarmupRounds, numBlocks);
+                        latencyStat(latencyUs);
+                        VERBOSE << "\tSample " << n << " (" << numBlocks << " blocks): "
+                                << srcBuffer.getBufferString() << " <-> "
+                                << recvBuffer.getBufferString() << " (" << label << "): "
+                                << std::fixed << std::setprecision(3) << latencyUs << " us\n";
+                    }
+                    double candidateUs = latencyStat.returnAppropriateMetric();
+                    if (bestLatencyUs == 0.0 || candidateUs < bestLatencyUs) {
+                        bestLatencyUs = candidateUs;
+                    }
                 }
 
                 if (!skipVerification) {
@@ -192,12 +212,17 @@ void DeviceToDeviceMessageLatencyPingPongSM::run(unsigned long long size, unsign
                     }
                 }
 
-                latencyValues.value(srcDeviceId, peerDeviceId) = latencyStat.returnAppropriateMetric();
+                latencyValues.value(srcDeviceId, peerDeviceId) = bestLatencyUs;
             }
         }
 
         output->addTestcase(key + "_" + label, NVB_RUNNING);
         output->addTestcaseResults(latencyValues,
             "SM ping-pong one-way latency GPU(row) -> GPU(column) (us), message size " + label);
+    }
+
+    if (jsonOutput) {
+        // Finalize the parent sweep entry (per-size sub-entries got their own status)
+        output->setTestcaseStatusAndAddIfNeeded(key, NVB_PASSED);
     }
 }

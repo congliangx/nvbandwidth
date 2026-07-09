@@ -85,9 +85,6 @@ else()
 endif()
 
 add_executable(nvbandwidth ${src})
-# Cooperative-groups grid synchronization (ping-pong latency kernel) requires
-# relocatable device code
-set_target_properties(nvbandwidth PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_include_directories(nvbandwidth PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES} .)
 target_link_libraries(nvbandwidth Boost::program_options ${NVML_LIB_NAME} cuda)
 
