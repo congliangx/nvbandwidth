@@ -170,6 +170,30 @@ When running under MPI, only MPI rank 0 will output stdout to the console. Stder
 
 It is recommended to only run "multinode*" testcases under MPI. While any testcase will succeed, results for non multinode testcases will only come from MPI rank 0.
 
+## Message latency sweep testcases
+
+Three testcases measure per-message GPU-to-GPU latency across a sweep of message
+sizes (powers of two in `[--minMsgSize, --maxMsgSize]`, default 1KiB..2MiB, max
+1GiB). One latency matrix (microseconds per message, row = initiating GPU) is
+reported per size.
+
+```
+./nvbandwidth -p device_to_device_message_latency               # all three
+./nvbandwidth -t device_to_device_message_latency_pingpong_sm --minMsgSize 1024 --maxMsgSize 2097152
+```
+
+- `device_to_device_message_latency_write_ce` / `..._read_ce`: steady-state time
+  per `cuMemcpyAsync` (push/pull): many back-to-back copies are enqueued behind a
+  spin-kernel blocker, timed with CUDA events, and divided by the copy count.
+  This includes per-copy engine command processing but pipelines across copies —
+  it answers "what does each message cost in a stream of messages".
+- `device_to_device_message_latency_pingpong_sm`: true one-way latency. Persistent
+  kernels on both GPUs exchange the message via P2P stores with a flag handshake
+  (release/acquire ordering via `__threadfence_system`); round-trip time is
+  measured on-device with `%globaltimer` and halved. No launch or event overhead
+  is included; the copy-kernel block count is auto-tuned per size. It answers
+  "how long until the peer GPU can consume a single message".
+
 ## Test Details
 There are two types of copies implemented, Copy Engine (CE) or Steaming Multiprocessor (SM)
 
