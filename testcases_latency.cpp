@@ -82,7 +82,7 @@ static unsigned int pingPongIters(unsigned long long msgSize) {
 // The crossover depends on the interconnect, so mid-range sizes measure all
 // candidates and the fastest (minimum) latency is reported.
 static std::vector<unsigned int> pingPongBlockCandidates(unsigned long long msgSize) {
-    if (msgSize <= 32 * 1024ULL) return {1};
+    if (msgSize <= 8 * 1024ULL) return {1};
     if (msgSize <= 512 * 1024ULL) return {1, 4, 8};
     return {8, 16};
 }
