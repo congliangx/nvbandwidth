@@ -64,6 +64,12 @@ nvbandwidth CLI:
   -j [ --json ]                  Print output in json format instead of plain
                                  text.
   -H [--useHugePages]            Use huge pages for host memory allocation
+  --minMsgSize arg (=1024)       Minimum message size in bytes for the
+                                 *_message_latency_* testcases (rounded down
+                                 to a power of two)
+  --maxMsgSize arg (=2097152)    Maximum message size in bytes for the
+                                 *_message_latency_* testcases (rounded down
+                                 to a power of two, at most 1 GiB)
 ```
 To run all testcases:
 ```
@@ -173,26 +179,67 @@ It is recommended to only run "multinode*" testcases under MPI. While any testca
 ## Message latency sweep testcases
 
 Three testcases measure per-message GPU-to-GPU latency across a sweep of message
-sizes (powers of two in `[--minMsgSize, --maxMsgSize]`, default 1KiB..2MiB, max
-1GiB). One latency matrix (microseconds per message, row = initiating GPU) is
-reported per size.
+sizes: powers of two in `[--minMsgSize, --maxMsgSize]` (bytes; default 1 KiB to
+2 MiB, i.e. 1K, 2K, 4K, ..., 1M, 2M; maximum 1 GiB). One latency matrix
+(**microseconds per message**, row = initiating GPU, column = peer GPU) is
+reported per size. All three require P2P-accessible peer pairs (waived otherwise).
+
+### Usage
+
+```bash
+# Run all three latency sweep testcases with the default 1KiB..2MiB sweep
+./nvbandwidth -p device_to_device_message_latency
+
+# True one-way latency only, custom sweep range (bytes)
+./nvbandwidth -t device_to_device_message_latency_pingpong_sm --minMsgSize 4096 --maxMsgSize 1048576
+
+# More samples per data point (default 3, median reported), JSON output
+./nvbandwidth -t device_to_device_message_latency_write_ce -i 5 -j
+```
+
+Example output (one matrix per message size):
 
 ```
-./nvbandwidth -p device_to_device_message_latency               # all three
-./nvbandwidth -t device_to_device_message_latency_pingpong_sm --minMsgSize 1024 --maxMsgSize 2097152
+Running device_to_device_message_latency_pingpong_sm_4KiB.
+SM ping-pong one-way latency GPU(row) -> GPU(column) (us), message size 4KiB
+           0         1         2         3
+ 0       N/A      2.15      2.36      2.42
+ 1      2.14       N/A      2.40      2.48
+ 2      2.38      2.40       N/A      2.14
+ 3      2.42      2.49      2.15       N/A
 ```
 
-- `device_to_device_message_latency_write_ce` / `..._read_ce`: steady-state time
-  per `cuMemcpyAsync` (push/pull): many back-to-back copies are enqueued behind a
-  spin-kernel blocker, timed with CUDA events, and divided by the copy count.
-  This includes per-copy engine command processing but pipelines across copies —
-  it answers "what does each message cost in a stream of messages".
-- `device_to_device_message_latency_pingpong_sm`: true one-way latency. Persistent
-  kernels on both GPUs exchange the message via P2P stores with a flag handshake
-  (release/acquire ordering via `__threadfence_system`); round-trip time is
-  measured on-device with `%globaltimer` and halved. No launch or event overhead
-  is included; the copy-kernel block count is auto-tuned per size. It answers
-  "how long until the peer GPU can consume a single message".
+### Which metric to use
+
+- `device_to_device_message_latency_pingpong_sm` — **true one-way latency**:
+  persistent kernels on both GPUs exchange the message via P2P stores with a
+  flag handshake (release/acquire ordering via `__threadfence_system`);
+  round-trip time is measured on-device with `%globaltimer` and halved. No
+  kernel-launch or CUDA-event overhead is included; the copy-kernel block count
+  is auto-tuned per size (fastest candidate reported). Use this to answer
+  *"how long until the peer GPU can consume a single message"* (OSU-style latency).
+- `device_to_device_message_latency_write_ce` — **steady-state per-message cost,
+  push direction**: many back-to-back `cuMemcpyAsync` calls are enqueued behind
+  a spin-kernel blocker, timed with CUDA events, and divided by the copy count.
+  Successive copies pipeline in the copy engine, so this is lower than the
+  one-way latency. Use it to answer *"what does each message cost in a stream
+  of messages"*.
+- `device_to_device_message_latency_read_ce` — same, pull direction (the row
+  device reads from the column device). PCIe P2P reads are non-posted, so small
+  pulls carry a much higher fixed cost than pushes — useful for choosing a
+  push- vs pull-based communication scheme.
+
+### Notes
+
+- `--bufferSize` is ignored by these testcases; buffers are sized per message.
+- `-i/--testSamples` controls samples per pair per size (median reported;
+  `-m/--useMean` switches to mean). Data verification is on by default
+  (patterns for CE, echo round-trip check for ping-pong); skip with `-s`.
+- With `-j`, each message size appears as its own testcase entry named
+  `<testcase>_<size>` (e.g. `device_to_device_message_latency_write_ce_4KiB`).
+- The hidden `--msgLatLoopCount` option overrides the copies per timed window
+  in the CE tests (0 = size-tiered default; reads cap at 128 because deep
+  pre-enqueued P2P pull copies can deadlock the enqueue on some platforms).
 
 ## Test Details
 There are two types of copies implemented, Copy Engine (CE) or Steaming Multiprocessor (SM)
