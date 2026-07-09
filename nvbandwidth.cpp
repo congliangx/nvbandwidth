@@ -44,6 +44,7 @@ bool useHugePages;
 long long targetNumPairs;
 unsigned long long minMsgSize;
 unsigned long long maxMsgSize;
+unsigned long long msgLatLoopCount;
 
 Verbosity VERBOSE(verbose);
 Verbosity OUTPUT(shouldOutput);
@@ -228,6 +229,7 @@ int main(int argc, char **argv) {
     all_opts.add(visible_opts);
     all_opts.add_options()
         ("loopCount", opt::value<unsigned long long int>(&loopCount)->default_value(defaultLoopCount), "Iterations of memcpy to be performed within a test sample")
+        ("msgLatLoopCount", opt::value<unsigned long long int>(&msgLatLoopCount)->default_value(0), "Override copies per timed window in the CE message latency testcases (0 = size-tiered default)")
         ("perfFormatter", opt::bool_switch(&perfFormatter)->default_value(false), "Use perf formatter prefix (&&&& PERF) in output");
 
     opt::variables_map vm;

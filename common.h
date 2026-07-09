@@ -61,6 +61,9 @@ extern bool useHugePages;
 // Message-size sweep bounds (bytes) for the *_message_latency_* testcases
 extern unsigned long long minMsgSize;
 extern unsigned long long maxMsgSize;
+// Optional override for copies per timed window in the CE message latency
+// testcases (0 = size-tiered default)
+extern unsigned long long msgLatLoopCount;
 
 #ifdef MULTINODE
 extern int localDevice;

@@ -57,8 +57,13 @@ static std::string msgSizeLabel(unsigned long long bytes) {
     return ss.str();
 }
 
-// Back-to-back cuMemcpyAsync count per timed window
-static unsigned long long ceLatencyLoopCount(unsigned long long msgSize) {
+// Back-to-back cuMemcpyAsync count per timed window. Pull (read) copies
+// expand to more pushbuffer commands per copy than push copies: pre-enqueueing
+// more than ~256 of them behind the blocked stream deadlocks the enqueue
+// (observed on PCIe P2P), so reads use a fixed smaller window.
+static unsigned long long ceLatencyLoopCount(unsigned long long msgSize, bool isRead) {
+    if (msgLatLoopCount > 0) return msgLatLoopCount;
+    if (isRead) return 128;
     if (msgSize <= 64 * 1024ULL) return 512;
     if (msgSize <= 512 * 1024ULL) return 256;
     return 128;
@@ -88,7 +93,7 @@ static void ceMessageLatencySweep(const std::string &key, bool isRead) {
     for (unsigned long long msgSize : messageSizeSweep()) {
         const std::string label = msgSizeLabel(msgSize);
         PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY_US);
-        MemcpyOperation memcpyInstance(ceLatencyLoopCount(msgSize), new MemcpyInitiatorCE(),
+        MemcpyOperation memcpyInstance(ceLatencyLoopCount(msgSize, isRead), new MemcpyInitiatorCE(),
                                        isRead ? PREFER_DST_CONTEXT : PREFER_SRC_CONTEXT);
 
         for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
