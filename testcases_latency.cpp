@@ -152,6 +152,95 @@ static void fillDevicePattern(const DeviceBuffer &buf, const std::vector<unsigne
     }
 }
 
+// Shared driver for the directional SM copy latency sweeps.
+// Write (push): kernel on the row device stores into the column device.
+// Read (pull): kernel on the row device loads from the column device.
+static void smMessageLatencySweep(const std::string &key, bool isRead) {
+    std::vector<unsigned int> pattern(_2MiB / sizeof(unsigned int));
+    xorshift2MBPattern(pattern.data(), 0xBAADF00D);
+
+    for (unsigned long long msgSize : messageSizeSweep()) {
+        const std::string label = msgSizeLabel(msgSize);
+        PeerValueMatrix<double> latencyValues(deviceCount, deviceCount, key + "_" + label, perfFormatter, LATENCY_US);
+        const unsigned int iters = pingPongIters(msgSize);
+        const std::vector<unsigned int> blockCandidates = pingPongBlockCandidates(msgSize);
+
+        for (int srcDeviceId = 0; srcDeviceId < deviceCount; srcDeviceId++) {
+            for (int peerDeviceId = 0; peerDeviceId < deviceCount; peerDeviceId++) {
+                if (peerDeviceId == srcDeviceId) {
+                    continue;
+                }
+
+                DeviceBuffer localBuffer(msgSize, srcDeviceId);
+                DeviceBuffer peerBuffer(msgSize, peerDeviceId);
+
+                if (!localBuffer.enablePeerAcess(peerBuffer)) {
+                    continue;
+                }
+
+                // The copy source holds the pattern; the destination starts zeroed
+                const DeviceBuffer &copySrc = isRead ? peerBuffer : localBuffer;
+                const DeviceBuffer &copyDst = isRead ? localBuffer : peerBuffer;
+                fillDevicePattern(copySrc, pattern);
+                CU_ASSERT(cuCtxSetCurrent(copyDst.getPrimaryCtx()));
+                CU_ASSERT(cuMemsetD8(copyDst.getBuffer(), 0, msgSize));
+                CU_ASSERT(cuCtxSynchronize());
+
+                double bestLatencyUs = 0.0;
+                for (unsigned int numBlocks : blockCandidates) {
+                    PerformanceStatistic latencyStat;
+                    for (unsigned int n = 0; n < averageLoopCount; n++) {
+                        double latencyUs = smMessageLatencyUs(srcDeviceId,
+                            copyDst.getBuffer(), copySrc.getBuffer(),
+                            msgSize, iters, pingPongWarmupRounds, numBlocks);
+                        latencyStat(latencyUs);
+                        VERBOSE << "\tSample " << n << " (" << numBlocks << " blocks): "
+                                << localBuffer.getBufferString() << (isRead ? " <- " : " -> ")
+                                << peerBuffer.getBufferString() << " (" << label << "): "
+                                << std::fixed << std::setprecision(3) << latencyUs << " us\n";
+                    }
+                    double candidateUs = latencyStat.returnAppropriateMetric();
+                    if (bestLatencyUs == 0.0 || candidateUs < bestLatencyUs) {
+                        bestLatencyUs = candidateUs;
+                    }
+                }
+
+                if (!skipVerification) {
+                    std::vector<unsigned char> dstHost(msgSize);
+                    CU_ASSERT(cuCtxSetCurrent(copyDst.getPrimaryCtx()));
+                    CU_ASSERT(cuMemcpyDtoH(dstHost.data(), copyDst.getBuffer(), msgSize));
+                    size_t offset = 0;
+                    while (offset < msgSize) {
+                        size_t chunk = std::min((size_t) msgSize - offset, (size_t) _2MiB);
+                        ASSERT(std::memcmp(dstHost.data() + offset, pattern.data(), chunk) == 0);
+                        offset += chunk;
+                    }
+                }
+
+                latencyValues.value(srcDeviceId, peerDeviceId) = bestLatencyUs;
+            }
+        }
+
+        output->addTestcase(key + "_" + label, NVB_RUNNING);
+        output->addTestcaseResults(latencyValues,
+            std::string("SM ") + (isRead ? "load (pull)" : "store (push)") +
+            " per-message latency GPU(row) " + (isRead ? "<-" : "->") +
+            " GPU(column) (us), message size " + label);
+    }
+
+    if (jsonOutput) {
+        output->setTestcaseStatusAndAddIfNeeded(key, NVB_PASSED);
+    }
+}
+
+void DeviceToDeviceMessageLatencyWriteSM::run(unsigned long long size, unsigned long long loopCount) {
+    smMessageLatencySweep(key, false);
+}
+
+void DeviceToDeviceMessageLatencyReadSM::run(unsigned long long size, unsigned long long loopCount) {
+    smMessageLatencySweep(key, true);
+}
+
 void DeviceToDeviceMessageLatencyPingPongSM::run(unsigned long long size, unsigned long long loopCount) {
     std::vector<unsigned int> pattern(_2MiB / sizeof(unsigned int));
     xorshift2MBPattern(pattern.data(), 0xBAADF00D);

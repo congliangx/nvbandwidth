@@ -103,7 +103,9 @@ std::vector<Testcase*> createNodeTestcases() {
         new DeviceLocalCopy(),
         new DeviceToDeviceMessageLatencyWriteCE(),
         new DeviceToDeviceMessageLatencyReadCE(),
-        new DeviceToDeviceMessageLatencyPingPongSM()
+        new DeviceToDeviceMessageLatencyPingPongSM(),
+        new DeviceToDeviceMessageLatencyWriteSM(),
+        new DeviceToDeviceMessageLatencyReadSM()
       });
     }
 #ifdef MULTINODE

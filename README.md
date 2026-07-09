@@ -228,6 +228,14 @@ SM ping-pong one-way latency GPU(row) -> GPU(column) (us), message size 4KiB
   device reads from the column device). PCIe P2P reads are non-posted, so small
   pulls carry a much higher fixed cost than pushes — useful for choosing a
   push- vs pull-based communication scheme.
+- `device_to_device_message_latency_write_sm` / `..._read_sm` — **NCCL-style SM
+  load/store data path**: a kernel on the row device copies the message with
+  P2P stores into (write) or P2P loads from (read) the column device, ending
+  each message with a system-wide fence — mirroring NCCL's per-chunk
+  copy+fence pattern (NCCL moves data with SM threads, not the copy engine).
+  Write is the sender-side issue+drain cost of posted stores (delivery time is
+  what the pingpong test measures); read is bound by load round trips (cf.
+  `NCCL_P2P_READ_ENABLE`). Timed on-device; block count auto-tuned per size.
 
 ### Notes
 

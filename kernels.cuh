@@ -46,4 +46,11 @@ double pingPongOneWayLatencyUs(int initiatorDev, int responderDev,
                                CUdeviceptr initiatorSrc, CUdeviceptr initiatorEcho, CUdeviceptr responderRecv,
                                size_t msgSize, unsigned int iters, unsigned int warmupRounds, unsigned int numBlocks,
                                unsigned long long timeoutNs = DEFAULT_PINGPONG_TIMEOUT_NS);
+
+// Measures per-message cost of an SM load/store copy (NCCL-style data path)
+// executed on execDev: each iteration copies the message grid-strided and
+// fences system-wide. Returns microseconds per message.
+double smMessageLatencyUs(int execDev, CUdeviceptr dst, CUdeviceptr src,
+                          size_t msgSize, unsigned int iters, unsigned int warmupIters,
+                          unsigned int numBlocks);
 #endif  // KERNELS_CUH_

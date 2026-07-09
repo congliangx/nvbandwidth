@@ -473,6 +473,39 @@ class DeviceToDeviceMessageLatencyReadCE: public Testcase {
     bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
 };
 
+// Per-message SM load/store push cost (NCCL-style sender data path)
+class DeviceToDeviceMessageLatencyWriteSM: public Testcase {
+ public:
+    DeviceToDeviceMessageLatencyWriteSM() : Testcase("device_to_device_message_latency_write_sm",
+            "\tMeasures per-message cost of pushing a message with SM stores (NCCL-style data path)\n"
+            "\tbetween each pair of accessible peers, for message sizes swept in powers of two over\n"
+            "\t[--minMsgSize, --maxMsgSize]. A kernel on the row device copies the message into the\n"
+            "\tcolumn device's memory with P2P stores; each message ends with a system-wide fence,\n"
+            "\tmirroring NCCL's per-chunk copy+fence pattern. This is the sender-side issue+drain\n"
+            "\tcost (posted writes do not wait for delivery; see the pingpong test for delivered\n"
+            "\tone-way latency). Timed on-device; block count auto-tuned per size.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceMessageLatencyWriteSM() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+};
+
+// Per-message SM load/store pull cost (P2P read data path)
+class DeviceToDeviceMessageLatencyReadSM: public Testcase {
+ public:
+    DeviceToDeviceMessageLatencyReadSM() : Testcase("device_to_device_message_latency_read_sm",
+            "\tMeasures per-message cost of pulling a message with SM loads (P2P read data path,\n"
+            "\tcf. NCCL_P2P_READ_ENABLE) between each pair of accessible peers, for message sizes\n"
+            "\tswept in powers of two over [--minMsgSize, --maxMsgSize]. A kernel on the row device\n"
+            "\tloads the message from the column device's memory into local memory; each message\n"
+            "\tends with a system-wide fence and a barrier, so per-message time is bound by the\n"
+            "\tload round trips. Timed on-device; block count auto-tuned per size.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceMessageLatencyReadSM() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+};
+
 // True one-way message latency via SM ping-pong kernels
 class DeviceToDeviceMessageLatencyPingPongSM: public Testcase {
  public:

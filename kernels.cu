@@ -642,6 +642,78 @@ double pingPongOneWayLatencyUs(int initiatorDev, int responderDev,
     return (double)elapsedNs / (2.0 * iters) / 1000.0;
 }
 
+// ---------------------------------------------------------------------------
+// SM copy message latency kernel (NCCL-style load/store data path)
+//
+// Runs on the initiating GPU only. Each iteration copies the whole message
+// with grid-strided SM loads/stores and ends with __threadfence_system() plus
+// a grid-wide barrier, mirroring NCCL's per-chunk "copy + fence (+ flag)"
+// pattern. With a remote destination (write/push) this measures the sender's
+// per-message issue+drain cost; with a remote source (read/pull) it measures
+// the load-round-trip-bound pull cost. Timed on-device with %globaltimer.
+// ---------------------------------------------------------------------------
+
+__global__ void smMsgLatencyKernel(uint4 *dst, const uint4 *src, size_t numElems,
+                                   unsigned int totalIters, unsigned int warmupIters,
+                                   unsigned long long *elapsedNsOut) {
+    cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+    const bool multiBlock = gridDim.x > 1;
+    const bool leader = (blockIdx.x == 0 && threadIdx.x == 0);
+    unsigned long long t0 = 0;
+
+    for (unsigned int i = 1; i <= totalIters; i++) {
+        if (leader && i == warmupIters + 1) {
+            t0 = globalTimerNs();
+        }
+        pingPongGridCopy(dst, src, numElems);
+        __threadfence_system();
+        pingPongSync(grid, multiBlock);
+    }
+
+    if (leader && elapsedNsOut != nullptr) {
+        *elapsedNsOut = globalTimerNs() - t0;
+    }
+}
+
+double smMessageLatencyUs(int execDev, CUdeviceptr dst, CUdeviceptr src,
+                          size_t msgSize, unsigned int iters, unsigned int warmupIters,
+                          unsigned int numBlocks) {
+    size_t numElems = msgSize / sizeof(uint4);
+    ASSERT(numElems > 0);
+    ASSERT(iters > 0);
+    unsigned int totalIters = iters + warmupIters;
+
+    int coopSupported = 0;
+    CUDA_ASSERT(cudaDeviceGetAttribute(&coopSupported, cudaDevAttrCooperativeLaunch, execDev));
+    ASSERT(coopSupported);
+
+    cudaStream_t stream;
+    unsigned long long *elapsedOut;
+
+    CUDA_ASSERT(cudaSetDevice(execDev));
+    CUDA_ASSERT(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    CUDA_ASSERT(cudaMalloc(&elapsedOut, sizeof(unsigned long long)));
+    CUDA_ASSERT(cudaMemset(elapsedOut, 0, sizeof(unsigned long long)));
+
+    dim3 gridDim(numBlocks, 1, 1);
+    dim3 blockDim(numThreadPerBlock, 1, 1);
+
+    uint4 *kDst = (uint4 *)dst;
+    const uint4 *kSrc = (const uint4 *)src;
+    void *args[] = {&kDst, &kSrc, &numElems, &totalIters, &warmupIters, &elapsedOut};
+
+    CUDA_ASSERT(cudaLaunchCooperativeKernel((void *)smMsgLatencyKernel, gridDim, blockDim, args, 0, stream));
+    CUDA_ASSERT(cudaStreamSynchronize(stream));
+
+    unsigned long long elapsedNs = 0;
+    CUDA_ASSERT(cudaMemcpy(&elapsedNs, elapsedOut, sizeof(elapsedNs), cudaMemcpyDeviceToHost));
+
+    CUDA_ASSERT(cudaFree(elapsedOut));
+    CUDA_ASSERT(cudaStreamDestroy(stream));
+
+    return (double)elapsedNs / iters / 1000.0;
+}
+
 void preloadKernels(int deviceCount) {
     cudaFuncAttributes unused;
 #ifdef MULTINODE
@@ -666,6 +738,7 @@ void preloadKernels(int deviceCount) {
         cudaFuncGetAttributes(&unused, &memcmpKernelDevice);
         cudaFuncGetAttributes(&unused, &multicastMemcmpKernelDevice);
         cudaFuncGetAttributes(&unused, &pingPongKernel);
+        cudaFuncGetAttributes(&unused, &smMsgLatencyKernel);
     }
 }
 
