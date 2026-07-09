@@ -58,6 +58,9 @@ extern bool jsonOutput;
 extern bool verbose;
 extern bool perfFormatter;
 extern bool useHugePages;
+// Message-size sweep bounds (bytes) for the *_message_latency_* testcases
+extern unsigned long long minMsgSize;
+extern unsigned long long maxMsgSize;
 
 #ifdef MULTINODE
 extern int localDevice;

@@ -115,19 +115,19 @@ void MemcpyInitiatorSMSplitWarp::memsetPattern(MemcpyDispatchInfo &info) const {
     }
 }
 
-unsigned long long MemcpyInitiatorCE::getAdjustedBandwidth(unsigned long long bandwidth) {
+double MemcpyInitiatorCE::getAdjustedBandwidth(double bandwidth) {
     return bandwidth;
 }
 
-unsigned long long MemcpyInitiatorSM::getAdjustedBandwidth(unsigned long long bandwidth) {
+double MemcpyInitiatorSM::getAdjustedBandwidth(double bandwidth) {
     return bandwidth;
 }
 
-unsigned long long MemcpyInitiatorMulticastWrite::getAdjustedBandwidth(unsigned long long bandwidth) {
+double MemcpyInitiatorMulticastWrite::getAdjustedBandwidth(double bandwidth) {
     return bandwidth;
 }
 
-unsigned long long MemcpyInitiatorSMSplitWarp::getAdjustedBandwidth(unsigned long long bandwidth) {
+double MemcpyInitiatorSMSplitWarp::getAdjustedBandwidth(double bandwidth) {
     // For split warp copies, we estimate bandwidth in each direction as 1/2 of measured bandwidth
     return bandwidth / 2;
 }
@@ -498,11 +498,14 @@ std::vector<double> MemcpyOperation::doMemcpyCore(MemcpyDispatchInfo &info) {
             float timeWithEvents = 0.0f;
             CU_ASSERT(cuEventElapsedTime(&timeWithEvents, startEvents[i], endEvents[i]));
             double elapsedWithEventsInUs = ((double) timeWithEvents * 1000.0);
-            unsigned long long bandwidth = (adjustedCopySizes[i] * loopCount * 1000ull * 1000ull) / (unsigned long long) elapsedWithEventsInUs;
+            ASSERT(elapsedWithEventsInUs > 0.0);
+            // Full double-precision math: the previous integer-microsecond cast
+            // truncated short measurement windows (and divided by zero below 1 us)
+            double bandwidth = ((double) adjustedCopySizes[i] * loopCount * 1e6) / elapsedWithEventsInUs;
 
             bandwidth = memcpyInitiator->getAdjustedBandwidth(bandwidth);
 
-            bandwidthStats[i]((double) bandwidth);
+            bandwidthStats[i](bandwidth);
 
             if (bandwidthValue == BandwidthValue::SUM_BW || BandwidthValue::TOTAL_BW || i == 0) {
                 // Verbose print only the values that are used for the final output

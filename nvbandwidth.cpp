@@ -42,6 +42,8 @@ bool useMean;
 bool perfFormatter;
 bool useHugePages;
 long long targetNumPairs;
+unsigned long long minMsgSize;
+unsigned long long maxMsgSize;
 
 Verbosity VERBOSE(verbose);
 Verbosity OUTPUT(shouldOutput);
@@ -97,7 +99,10 @@ std::vector<Testcase*> createNodeTestcases() {
         new OneToAllReadSM(),
         new HostDeviceLatencySM(),
         new DeviceToDeviceLatencySM(),
-        new DeviceLocalCopy()
+        new DeviceLocalCopy(),
+        new DeviceToDeviceMessageLatencyWriteCE(),
+        new DeviceToDeviceMessageLatencyReadCE(),
+        new DeviceToDeviceMessageLatencyPingPongSM()
       });
     }
 #ifdef MULTINODE
@@ -215,6 +220,8 @@ int main(int argc, char **argv) {
         ("targetNumPairs,P",  opt::value<long long>(&targetNumPairs)->default_value(-1), "Target pairs for multinode device-to-device tests.")
         ("useMean,m", opt::bool_switch(&useMean)->default_value(false), "Use mean instead of median for results")
         ("useHugePages,H",  opt::bool_switch(&useHugePages)->default_value(false), "Use huge pages for host allocations.")
+        ("minMsgSize", opt::value<unsigned long long int>(&minMsgSize)->default_value(1024), "Minimum message size in bytes for the *_message_latency_* testcases (rounded down to a power of two)")
+        ("maxMsgSize", opt::value<unsigned long long int>(&maxMsgSize)->default_value(2 * _MiB), "Maximum message size in bytes for the *_message_latency_* testcases (rounded down to a power of two)")
         ("json,j", opt::bool_switch(&jsonOutput)->default_value(false), "Print output in json format instead of plain text.");
 
     opt::options_description all_opts("");
@@ -272,6 +279,23 @@ int main(int argc, char **argv) {
         output->recordError(errmsg.str());
         return 1;
     }
+    // Validate the message-size sweep bounds: at least one uint4, rounded
+    // down to powers of two so copy kernels never truncate
+    if (minMsgSize < 16 || maxMsgSize < minMsgSize) {
+        std::stringstream errmsg;
+        errmsg << "ERROR: Invalid message size range [" << minMsgSize << ", " << maxMsgSize
+               << "]. minMsgSize must be >= 16 bytes and <= maxMsgSize.";
+        output->recordError(errmsg.str());
+        return 1;
+    }
+    auto floorPow2 = [](unsigned long long v) {
+        unsigned long long p = 1;
+        while (p <= v / 2) p *= 2;
+        return p;
+    };
+    minMsgSize = floorPow2(minMsgSize);
+    maxMsgSize = floorPow2(maxMsgSize);
+
 #ifdef MULTINODE
     // In multinode mode, validate against maximum possible pairs
     if (targetNumPairs > 0) {

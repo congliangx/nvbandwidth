@@ -21,7 +21,7 @@ endif()
 
 if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "13.0")
     # 5.2 architecture not supported since CUDA 13.0
-    set(supported_archs "75" "80" "86" "89" "90" "100")
+    set(supported_archs "75" "80" "86" "89" "90" "100" "120")
 else ()
     set(supported_archs "52" "70" "75" "80" "86" "89" "90" "100")
 endif()
@@ -59,6 +59,7 @@ set(src
     testcase.cpp
     testcases_ce.cpp
     testcases_sm.cpp
+    testcases_latency.cpp
     kernels.cu
     memcpy.cpp
     nvbandwidth.cpp
@@ -84,6 +85,9 @@ else()
 endif()
 
 add_executable(nvbandwidth ${src})
+# Cooperative-groups grid synchronization (ping-pong latency kernel) requires
+# relocatable device code
+set_target_properties(nvbandwidth PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 target_include_directories(nvbandwidth PRIVATE ${CMAKE_CUDA_TOOLKIT_INCLUDE_DIRECTORIES} .)
 target_link_libraries(nvbandwidth Boost::program_options ${NVML_LIB_NAME} cuda)
 

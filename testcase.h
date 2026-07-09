@@ -439,6 +439,56 @@ class OneToAllReadSM: public Testcase {
     bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
 };
 
+// Message-size latency sweep testcases: measure per-message latency (us) for
+// message sizes swept in powers of two over [--minMsgSize, --maxMsgSize]
+// (default 1KiB..2MiB). One latency matrix is reported per message size.
+
+// Per-message CE latency sweep, push direction (source context)
+class DeviceToDeviceMessageLatencyWriteCE: public Testcase {
+ public:
+    DeviceToDeviceMessageLatencyWriteCE() : Testcase("device_to_device_message_latency_write_ce",
+            "\tMeasures per-message latency of cuMemcpyAsync between each pair of accessible peers\n"
+            "\tfor message sizes swept in powers of two over [--minMsgSize, --maxMsgSize].\n"
+            "\tThe row device pushes each message to the column device using the row device's context.\n"
+            "\tLatency is the steady-state time per copy: many back-to-back copies are timed with CUDA\n"
+            "\tevents behind a spin-kernel blocker and divided by the copy count.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceMessageLatencyWriteCE() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+};
+
+// Per-message CE latency sweep, pull direction (destination context)
+class DeviceToDeviceMessageLatencyReadCE: public Testcase {
+ public:
+    DeviceToDeviceMessageLatencyReadCE() : Testcase("device_to_device_message_latency_read_ce",
+            "\tMeasures per-message latency of cuMemcpyAsync between each pair of accessible peers\n"
+            "\tfor message sizes swept in powers of two over [--minMsgSize, --maxMsgSize].\n"
+            "\tThe row device pulls each message from the column device using the row device's context.\n"
+            "\tLatency is the steady-state time per copy: many back-to-back copies are timed with CUDA\n"
+            "\tevents behind a spin-kernel blocker and divided by the copy count.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceMessageLatencyReadCE() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+};
+
+// True one-way message latency via SM ping-pong kernels
+class DeviceToDeviceMessageLatencyPingPongSM: public Testcase {
+ public:
+    DeviceToDeviceMessageLatencyPingPongSM() : Testcase("device_to_device_message_latency_pingpong_sm",
+            "\tMeasures true one-way message latency between each pair of accessible peers with\n"
+            "\tpersistent ping-pong kernels, for message sizes swept in powers of two over\n"
+            "\t[--minMsgSize, --maxMsgSize]. The row device writes the message into the column\n"
+            "\tdevice's memory via P2P stores and sets a flag; the column device echoes it back.\n"
+            "\tOne-way latency = round-trip / 2, timed on-device with the GPU global timer, so no\n"
+            "\tkernel launch or CUDA event overhead is included.\n"
+            "\t--bufferSize flag is ignored") {}
+    virtual ~DeviceToDeviceMessageLatencyPingPongSM() {}
+    void run(unsigned long long size, unsigned long long loopCount);
+    bool filter() { return Testcase::filterHasAccessiblePeerPairs(); }
+};
+
 #ifdef MULTINODE
 // Device to Device CE Read memcpy using cuMemcpyAsync
 class MultinodeDeviceToDeviceReadCE: public Testcase {

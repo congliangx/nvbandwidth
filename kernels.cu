@@ -17,6 +17,8 @@
 
 #include "kernels.cuh"
 
+#include <cooperative_groups.h>
+
 __global__ void simpleCopyKernel(unsigned long long loopCount, uint4 *dst, uint4 *src) {
     for (unsigned int i = 0; i < loopCount; i++) {
         const int idx = blockIdx.x * blockDim.x + threadIdx.x;
@@ -446,6 +448,190 @@ CUresult multicastMemcmpKernel(CUstream stream, CUdeviceptr buffer, CUdeviceptr 
     return CUDA_SUCCESS;
 }
 
+// ---------------------------------------------------------------------------
+// Ping-pong message latency kernel
+//
+// Two instances of this kernel run persistently, one per GPU of a pair.
+// The initiator copies the message into the responder's receive buffer via
+// P2P stores, fences system-wide, then sets a flag in the responder's memory.
+// The responder polls its local flag (remote writes, local reads only),
+// echoes the received data back into the initiator's echo buffer and sets the
+// initiator's flag. One-way latency = measured round-trip time / 2.
+// Timing uses %globaltimer (ns) on the initiator only, so no cross-GPU clock
+// synchronization is required; warmup rounds are excluded.
+// ---------------------------------------------------------------------------
+
+__device__ __forceinline__ unsigned long long globalTimerNs() {
+    unsigned long long t;
+    asm volatile("mov.u64 %0, %%globaltimer;" : "=l"(t));
+    return t;
+}
+
+__device__ __forceinline__ void pingPongSync(cooperative_groups::grid_group &grid, bool multiBlock) {
+    if (multiBlock) {
+        grid.sync();
+    } else {
+        __syncthreads();
+    }
+}
+
+__device__ __forceinline__ void pingPongGridCopy(uint4 *dst, const uint4 *src, size_t numElems) {
+    size_t idx = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    for (size_t i = idx; i < numElems; i += stride) {
+        __stcg(dst + i, __ldcg(src + i));
+    }
+}
+
+__global__ void pingPongKernel(uint4 *writeDst, const uint4 *readSrc, size_t numElems,
+                               volatile unsigned int *localFlag, volatile unsigned int *remoteFlag,
+                               unsigned int totalRounds, unsigned int warmupRounds, int isInitiator,
+                               unsigned long long timeoutNs,
+                               unsigned long long *elapsedNsOut, int *errorFlagOut) {
+    cooperative_groups::grid_group grid = cooperative_groups::this_grid();
+    const bool multiBlock = gridDim.x > 1;
+    const bool leader = (blockIdx.x == 0 && threadIdx.x == 0);
+    const unsigned long long startTime = globalTimerNs();
+    unsigned long long t0 = 0;
+
+    for (unsigned int r = 1; r <= totalRounds; r++) {
+        if (isInitiator) {
+            if (leader && r == warmupRounds + 1) {
+                t0 = globalTimerNs();
+            }
+            pingPongGridCopy(writeDst, readSrc, numElems);
+            // Make the payload globally visible before the flag store below;
+            // grid-wide barrier orders all threads' fenced stores before it
+            __threadfence_system();
+            pingPongSync(grid, multiBlock);
+            if (leader) {
+                *remoteFlag = r;
+                while (*localFlag < r) {
+                    if (globalTimerNs() - startTime > timeoutNs) {
+                        *errorFlagOut = 1;
+                        break;
+                    }
+                }
+                __threadfence();
+            }
+            pingPongSync(grid, multiBlock);
+        } else {
+            if (leader) {
+                while (*localFlag < r) {
+                    if (globalTimerNs() - startTime > timeoutNs) {
+                        *errorFlagOut = 1;
+                        break;
+                    }
+                }
+                __threadfence();
+            }
+            pingPongSync(grid, multiBlock);
+            pingPongGridCopy(writeDst, readSrc, numElems);
+            __threadfence_system();
+            pingPongSync(grid, multiBlock);
+            if (leader) {
+                *remoteFlag = r;
+            }
+        }
+    }
+
+    if (isInitiator && leader && elapsedNsOut != nullptr) {
+        *elapsedNsOut = globalTimerNs() - t0;
+    }
+}
+
+double pingPongOneWayLatencyUs(int initiatorDev, int responderDev,
+                               CUdeviceptr initiatorSrc, CUdeviceptr initiatorEcho, CUdeviceptr responderRecv,
+                               size_t msgSize, unsigned int iters, unsigned int warmupRounds, unsigned int numBlocks,
+                               unsigned long long timeoutNs) {
+    size_t numElems = msgSize / sizeof(uint4);
+    ASSERT(numElems > 0);
+    ASSERT(iters > 0);
+    unsigned int totalRounds = iters + warmupRounds;
+
+    int coopSupported = 0;
+    CUDA_ASSERT(cudaDeviceGetAttribute(&coopSupported, cudaDevAttrCooperativeLaunch, initiatorDev));
+    ASSERT(coopSupported);
+    CUDA_ASSERT(cudaDeviceGetAttribute(&coopSupported, cudaDevAttrCooperativeLaunch, responderDev));
+    ASSERT(coopSupported);
+
+    cudaStream_t streamInit, streamResp;
+    unsigned int *flagInit, *flagResp;
+    unsigned long long *elapsedOut;
+    int *errInit, *errResp;
+
+    CUDA_ASSERT(cudaSetDevice(responderDev));
+    CUDA_ASSERT(cudaStreamCreateWithFlags(&streamResp, cudaStreamNonBlocking));
+    CUDA_ASSERT(cudaMalloc(&flagResp, sizeof(unsigned int)));
+    CUDA_ASSERT(cudaMalloc(&errResp, sizeof(int)));
+    CUDA_ASSERT(cudaMemset(flagResp, 0, sizeof(unsigned int)));
+    CUDA_ASSERT(cudaMemset(errResp, 0, sizeof(int)));
+    CUDA_ASSERT(cudaDeviceSynchronize());
+
+    CUDA_ASSERT(cudaSetDevice(initiatorDev));
+    CUDA_ASSERT(cudaStreamCreateWithFlags(&streamInit, cudaStreamNonBlocking));
+    CUDA_ASSERT(cudaMalloc(&flagInit, sizeof(unsigned int)));
+    CUDA_ASSERT(cudaMalloc(&errInit, sizeof(int)));
+    CUDA_ASSERT(cudaMalloc(&elapsedOut, sizeof(unsigned long long)));
+    CUDA_ASSERT(cudaMemset(flagInit, 0, sizeof(unsigned int)));
+    CUDA_ASSERT(cudaMemset(errInit, 0, sizeof(int)));
+    CUDA_ASSERT(cudaMemset(elapsedOut, 0, sizeof(unsigned long long)));
+    CUDA_ASSERT(cudaDeviceSynchronize());
+
+    dim3 gridDim(numBlocks, 1, 1);
+    dim3 blockDim(numThreadPerBlock, 1, 1);
+
+    // Responder arguments: echo local recvBuf into the initiator's echo buffer
+    uint4 *rWriteDst = (uint4 *)initiatorEcho;
+    const uint4 *rReadSrc = (const uint4 *)responderRecv;
+    volatile unsigned int *rLocalFlag = flagResp;
+    volatile unsigned int *rRemoteFlag = flagInit;
+    int rIsInitiator = 0;
+    unsigned long long *rElapsedOut = nullptr;
+    void *argsResp[] = {&rWriteDst, &rReadSrc, &numElems, &rLocalFlag, &rRemoteFlag,
+                        &totalRounds, &warmupRounds, &rIsInitiator, &timeoutNs, &rElapsedOut, &errResp};
+
+    // Initiator arguments: push local srcBuf into the responder's receive buffer
+    uint4 *iWriteDst = (uint4 *)responderRecv;
+    const uint4 *iReadSrc = (const uint4 *)initiatorSrc;
+    volatile unsigned int *iLocalFlag = flagInit;
+    volatile unsigned int *iRemoteFlag = flagResp;
+    int iIsInitiator = 1;
+    void *argsInit[] = {&iWriteDst, &iReadSrc, &numElems, &iLocalFlag, &iRemoteFlag,
+                        &totalRounds, &warmupRounds, &iIsInitiator, &timeoutNs, &elapsedOut, &errInit};
+
+    CUDA_ASSERT(cudaSetDevice(responderDev));
+    CUDA_ASSERT(cudaLaunchCooperativeKernel((void *)pingPongKernel, gridDim, blockDim, argsResp, 0, streamResp));
+    CUDA_ASSERT(cudaSetDevice(initiatorDev));
+    CUDA_ASSERT(cudaLaunchCooperativeKernel((void *)pingPongKernel, gridDim, blockDim, argsInit, 0, streamInit));
+
+    CUDA_ASSERT(cudaStreamSynchronize(streamInit));
+    CUDA_ASSERT(cudaStreamSynchronize(streamResp));
+
+    unsigned long long elapsedNs = 0;
+    int initTimedOut = 0, respTimedOut = 0;
+    CUDA_ASSERT(cudaMemcpy(&elapsedNs, elapsedOut, sizeof(elapsedNs), cudaMemcpyDeviceToHost));
+    CUDA_ASSERT(cudaMemcpy(&initTimedOut, errInit, sizeof(initTimedOut), cudaMemcpyDeviceToHost));
+    CUDA_ASSERT(cudaSetDevice(responderDev));
+    CUDA_ASSERT(cudaMemcpy(&respTimedOut, errResp, sizeof(respTimedOut), cudaMemcpyDeviceToHost));
+
+    CUDA_ASSERT(cudaFree(flagResp));
+    CUDA_ASSERT(cudaFree(errResp));
+    CUDA_ASSERT(cudaStreamDestroy(streamResp));
+    CUDA_ASSERT(cudaSetDevice(initiatorDev));
+    CUDA_ASSERT(cudaFree(flagInit));
+    CUDA_ASSERT(cudaFree(errInit));
+    CUDA_ASSERT(cudaFree(elapsedOut));
+    CUDA_ASSERT(cudaStreamDestroy(streamInit));
+
+    if (initTimedOut || respTimedOut) {
+        throw std::string("Ping-pong latency kernel timed out waiting for the peer GPU (devices ") +
+            std::to_string(initiatorDev) + " <-> " + std::to_string(responderDev) + ")";
+    }
+
+    return (double)elapsedNs / (2.0 * iters) / 1000.0;
+}
+
 void preloadKernels(int deviceCount) {
     cudaFuncAttributes unused;
 #ifdef MULTINODE
@@ -469,6 +655,7 @@ void preloadKernels(int deviceCount) {
         cudaFuncGetAttributes(&unused, &memsetKernelDevice);
         cudaFuncGetAttributes(&unused, &memcmpKernelDevice);
         cudaFuncGetAttributes(&unused, &multicastMemcmpKernelDevice);
+        cudaFuncGetAttributes(&unused, &pingPongKernel);
     }
 }
 

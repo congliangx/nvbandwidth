@@ -143,7 +143,7 @@ class MemcpyInitiator {
     // Compare buffer with a pattern
     virtual void memcmpPattern(MemcpyDispatchInfo &info) const = 0;
     // Adjust the bandwidth before final reporting
-    virtual unsigned long long getAdjustedBandwidth(unsigned long long bandwidth) = 0;
+    virtual double getAdjustedBandwidth(double bandwidth) = 0;
 };
 
 class MemcpyInitiatorSM : public MemcpyInitiator {
@@ -156,7 +156,7 @@ class MemcpyInitiatorSM : public MemcpyInitiator {
     // Compare buffer with a pattern
     void memcmpPattern(MemcpyDispatchInfo &info) const;
     // Adjust the bandwidth before final reporting
-    unsigned long long getAdjustedBandwidth(unsigned long long bandwidth);
+    double getAdjustedBandwidth(double bandwidth);
 };
 
 class MemcpyInitiatorCE : public MemcpyInitiator  {
@@ -169,7 +169,7 @@ class MemcpyInitiatorCE : public MemcpyInitiator  {
     // Compare buffer with a pattern
     void memcmpPattern(MemcpyDispatchInfo &info) const;
     // Adjust the bandwidth before final reporting
-    unsigned long long getAdjustedBandwidth(unsigned long long bandwidth);
+    double getAdjustedBandwidth(double bandwidth);
 };
 
 class MemcpyInitiatorMulticastWrite : public MemcpyInitiator {
@@ -182,7 +182,7 @@ class MemcpyInitiatorMulticastWrite : public MemcpyInitiator {
     // Compare buffer with a pattern
     void memcmpPattern(MemcpyDispatchInfo &info) const;
     // Adjust the bandwidth before final reporting
-    unsigned long long getAdjustedBandwidth(unsigned long long bandwidth);
+    double getAdjustedBandwidth(double bandwidth);
 };
 
 class MemcpyInitiatorSMSplitWarp : public MemcpyInitiatorSM {
@@ -193,7 +193,7 @@ class MemcpyInitiatorSMSplitWarp : public MemcpyInitiatorSM {
     // Compare buffer with a pattern
     void memcmpPattern(MemcpyDispatchInfo &info) const;
     // Adjust the bandwidth before final reporting
-    unsigned long long getAdjustedBandwidth(unsigned long long bandwidth);
+    double getAdjustedBandwidth(double bandwidth);
 };
 
 // Abstraction of a memory Operation.
@@ -248,5 +248,8 @@ class MemPtrChaseOperation : public MemoryOperation {
     unsigned long long loopCount;
     unsigned int smCount;
 };
+
+// Fills buffer with 2 MiB of a deterministic xorshift pattern (defined in memcpy.cpp)
+void xorshift2MBPattern(unsigned int* buffer, unsigned int seed);
 
 #endif  // MEMCPY_H_

@@ -36,4 +36,14 @@ CUresult memcmpKernel(CUstream stream, CUdeviceptr buffer, CUdeviceptr pattern, 
 CUresult multicastMemcmpKernel(CUstream stream, CUdeviceptr buffer, CUdeviceptr pattern, unsigned long long num_elements, unsigned int num_pattern_elements, CUdeviceptr errorFlag);
 
 CUresult memclearKernelByWarpParity(CUstream stream, CUdeviceptr buffer, size_t size, bool clearOddWarpIndexed);
+
+const unsigned long long DEFAULT_PINGPONG_TIMEOUT_NS = 5000000000ULL;   // 5 seconds
+
+// Measures true one-way message latency between two GPUs with persistent
+// ping-pong kernels (P2P stores + flag handshake). Returns microseconds per
+// one-way message. Throws std::string on peer handshake timeout.
+double pingPongOneWayLatencyUs(int initiatorDev, int responderDev,
+                               CUdeviceptr initiatorSrc, CUdeviceptr initiatorEcho, CUdeviceptr responderRecv,
+                               size_t msgSize, unsigned int iters, unsigned int warmupRounds, unsigned int numBlocks,
+                               unsigned long long timeoutNs = DEFAULT_PINGPONG_TIMEOUT_NS);
 #endif  // KERNELS_CUH_
